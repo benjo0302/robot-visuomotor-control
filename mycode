@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+
+#---------------Import Libraries and msgs---------------:
+
+import rospy
+import time
+import math
+import numpy as np
+from std_msgs.msg import *
+from geometry_msgs.msg import *
+import tf2_msgs.msg
+from tf.transformations import euler_from_quaternion
+from collections import Counter
+from control_lib import UR_Controller
+
+
+#---------------Initialise---------------:
+max_acc = 1.0 #maximum acceleration of arm
+max_vel = 1.0 #maximum velocity of arm
+header = "def myProg():"
+footer = "\nend"
+
+print("Please Wait While System Starts Up...")
+rospy.init_node("example_assignment", anonymous=False)
+ur_script = rospy.Publisher('/ur_hardware_interface/script_command', String, queue_size=10)
+ur_con = UR_Controller() #variable for library 
+time.sleep(2) #time for the system to start
+print("System Started")
+
+#---------------Main Code---------------:
+
+# Home robot
+#home_waypoint = [-1.532, -2.0, 2.0973, -1.59, 1.816, 2.0]
+#home_waypoint =  [-1.001, -1.8002, 2, -1.57001, 1.57001, 1.57001]
+home_waypoint = [-2.018, -2.10, 2, -1.5835, 1.485, 1.378] #starting point in x,y,z,roll,pitch,yaw format
+command = ur_con.generate_move_j(home_waypoint) #variable for joint movement to home point
+ur_script.publish(command) #publish command to UR10 robot to move
+time.sleep(15) # time to reach home waypoint
+
+def move_j_pose(pose): #joint movement to pose location
+	header = "def myProg():"
+	footer = "\nend"
+	x = pose.position.x
+	y = pose.position.y
+	z = pose.position.z
+	rx, ry, rz = UR_Controller().convert_to_euler(pose.orientation)
+	pose_str = '['+str(x)+ ',' +str(y)+ ',' +str(z)+ ',' +str(rx)+ ',' +str(ry)+ ',' +str(rz) +']'
+	command = header + '\n\tmovej(p{}, a={}, v={}, t=0, r=0)'.format(pose_str, max_acc, max_vel) + footer
+	return command
+def move_x_error(value): #definition for movement on x axis
+	my_pos = ur_con.get_pose()
+	my_pos.position.x += value #value determines the distance of movement
+	command = move_j_pose(my_pos)
+	ur_script.publish(command)	
+	time.sleep(3) #time to move
+	trans_errors = (ur_con.check_errors(my_pos)).ee_trans_error #return errors after movement
+	return trans_errors
+def move_y_error(value): #definition for movement on y axis
+	my_pos = ur_con.get_pose()
+	my_pos.position.y += value
+	command = move_j_pose(my_pos)
+	ur_script.publish(command)	
+	time.sleep(3)
+	trans_errors = (ur_con.check_errors(my_pos)).ee_trans_error
+	return trans_errors
+def move_z_error(value): #definition for movement on z axis
+	my_pos = ur_con.get_pose()
+	my_pos.position.z += value
+	command = move_j_pose(my_pos)
+	ur_script.publish(command)	
+	time.sleep(3)
+	trans_errors = (ur_con.check_errors(my_pos)).ee_trans_error
+	return trans_errors	
+def rotate_roll_error(value): #definition for the roll rotation of the end effector and return the error
+	my_pos = ur_con.get_pose()
+	command = ur_con.rotate_tool(value,0,0) #command to rotate on x axis
+	ur_script.publish(command)
+	time.sleep(3)
+	rot_error = (ur_con.check_errors(my_pos)).ee_rot_error
+	return rot_error
+def rotate_pitch_error(value): #definition for the pitch rotation of the end effector and return the error
+	my_pos = ur_con.get_pose()
+	command = ur_con.rotate_tool(0,value,0) #command to rotate on y axis
+	ur_script.publish(command)
+	time.sleep(3)
+	rot_error = (ur_con.check_errors(my_pos)).ee_rot_error
+	return rot_error
+def rotate_yaw_error(value): #definition for the pitch rotation of the end effector and return the error
+	my_pos = ur_con.get_pose()
+	command = ur_con.rotate_tool(0,0,value)
+	ur_script.publish(command)#command to rotate on  axis
+	time.sleep(3)
+	rot_error = (ur_con.check_errors(my_pos)).ee_rot_error
+	return rot_error		
+
+	
+errors = ur_con.check_errors(ur_con.get_pose())
+print("Cartesian error:", (errors.ee_trans_error),"m") #Directional error in meters
+print("Orientational error:", errors.ee_rot_error, "degrees") #Rotational error in degrees
+print("Ball caught:",errors.ball_caught) #Boolean tell that tells us if the ball was caught or not
+#print(my_pose)	
+while errors.ball_caught == False: #while loop condition of when ball is not caught
+	while errors.ee_trans_error >= 0.05:# error should be greater than the threshold value before caught
+		dist_error = move_x_error(0.015) and move_y_error(0.03) and move_z_error(-0.015)#calculated movements to reduce error
+		print("The new first error is:", dist_error)
+		if dist_error < errors.ee_trans_error: errors.ee_trans_error = dist_error
+		if dist_error > errors.ee_trans_error:
+			dist_error = move_x_error(-0.02) and move_y_error(-0.10) and move_z_error(0.01)#calculated movement in opposite direction of the initial movement
+			print("The new second error is:", dist_error)	
+			if dist_error < errors.ee_trans_error : errors.ee_trans_error = dist_error
+		else: errors.ee_trans_error = dist_error
+		if dist_error > errors.ee_trans_error:
+			dist_error = move_x_error(0.01) and move_y_error(0.06) and move_z_error(-0.01)
+			print("Correction of y:", dist_error)# a little correction of movement
+			if dist_error < errors.ee_trans_error : errors.ee_trans_error = dist_error
+			if dist_error > errors.ee_trans_error: 
+				dist_error = move_x_error(-0.1) and move_y_error(-0.04) and move_z_error(0.02)
+				print("Correction of x:", dist_error)
+				errors.ee_trans_error = dist_error
+		else: errors.ee_trans_error = dist_error		
+		if errors.ee_trans_error < 0.05:   
+			print("translational distance within threshold")
+			break	#exit loop if within this range 
+				
+	while errors.ee_rot_error >= 5:
+		rot_error = rotate_roll_error(-0.1) and rotate_pitch_error(0.1) and rotate_yaw_error(-0.1)#little rotations of the withtool frame instead of base frame
+		print("error:",rot_error)
+		if rot_error > errors.ee_rot_error:
+			rot_error = rotate_roll_error(0.1) and rotate_pitch_error(-0.1) and rotate_yaw_error(0.1)#little rotations in opposite direction
+			print("error",rot_error)
+			if rot_error < errors.ee_rot_error: 
+				errors.ee_rot_error = rot_error
+		else: errors.ee_rot_error = rot_error	
+		if rot_error < 5:
+			print("orientational angle within threshold")
+			break			
+	if (errors.ee_trans_error < 0.05 and errors.ee_rot_error < 5.0): #less than threshold values of distance and orientation displays ball caught  
+		print("BALL WAS CAUGHT!")
+		break
+			
+		
+			
